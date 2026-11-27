@@ -9,6 +9,7 @@
 //                       音声ファイルを再生する部品なら途中から再生できる）
 //       options.onEnd   話し終えたとき（失敗時も）必ず onEnd(かかった秒数) を呼ぶ
 //   stop()                        すぐ黙る
+//   isSpeaking()                  （任意）今まさに声が出ているか
 
 export function createBrowserSpeechProvider() {
   const synth = window.speechSynthesis;
@@ -58,6 +59,9 @@ export function createBrowserSpeechProvider() {
         synth.speak(u);
       }, 60);
     },
+
+    // 今まさに声が出ているか（読み終わりの通知が来ない場合の確認用）
+    isSpeaking: () => !!synth && (synth.speaking || synth.pending),
 
     stop() {
       ++token;

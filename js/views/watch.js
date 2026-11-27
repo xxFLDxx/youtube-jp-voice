@@ -22,6 +22,7 @@ export function renderWatch(root, videoId) {
   const current = h('p', { class: 'current-sub', 'aria-live': 'off' }, '');
   const status = h('p', { class: 'status', role: 'status' });
   const list = h('ol', { class: 'sub-list' });
+  const diag = h('p', { class: 'note diag' });   // 声を途中で止めた理由（原因調査用）
 
   const playBtn = h('button', { type: 'button', class: 'primary', disabled: true }, '▶ 再生');
   const speedSel = h('select', { id: 'speed', disabled: true },
@@ -54,6 +55,7 @@ export function renderWatch(root, videoId) {
       title,
       h('p', { class: 'note' },
         '声が出ないときは、動画の中ではなく上の「再生」ボタンを押してください。'),
+      diag,
     ),
     h('aside', { class: 'watch-side' },
       h('h2', {}, '日本語字幕'),
@@ -123,6 +125,9 @@ export function renderWatch(root, videoId) {
             getTime: () => player.getCurrentTime(),
             getRate: () => player.getPlaybackRate(),
             onActiveChange,
+            onVoiceStop: (reason) => {
+              diag.textContent = `最後に声を途中で止めた理由: ${reason}（動画の ${formatTime(player.getCurrentTime())} 付近）`;
+            },
           });
           engine.setVoiceOn(voiceChk.checked);
           engine.start();
@@ -131,8 +136,11 @@ export function renderWatch(root, videoId) {
         },
         onStateChange: (e) => {
           const playing = e.data === YT.PlayerState.PLAYING;
-          playBtn.textContent = playing ? '一時停止' : '▶ 再生';
-          engine?.setPlaying(playing);
+          const buffering = e.data === YT.PlayerState.BUFFERING;
+          // 読み込み待ちは「再生中の一時的な足踏み」として扱い、声は止めない
+          if (!buffering) playBtn.textContent = playing ? '一時停止' : '▶ 再生';
+          if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED) engine?.pause();
+          else engine?.setPlaying(playing);
         },
         onPlaybackRateChange: (e) => {
           speedSel.value = String(e.data);
