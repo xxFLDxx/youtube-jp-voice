@@ -40,6 +40,7 @@ function sameSource(job, rawText) {
 // onProgress({ phase: 'translate' | 'tts' | 'done', done, total, waitSec })
 //   waitSec: Googleの1分あたりの上限に当たって待っている場合の残り秒数（待っていなければ 0）
 export async function runConversion({ videoId, title, rawText, cues, voice }, { translator, tts, onProgress = () => {}, signal }) {
+  navigator.storage?.persist?.().catch(() => {});   // 保存したデータを、ブラウザに勝手に消されにくくする
   let job = await db.getJob(videoId);
   if (!sameSource(job, rawText)) {
     // 新しい文字起こしでの変換: 前の結果は消してやり直す
