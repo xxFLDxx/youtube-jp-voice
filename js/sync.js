@@ -7,21 +7,27 @@ const SEEK_FORWARD = 1.5;      // 進むはずの量よりこれ以上（秒）�
 const MIN_WINDOW = 0.8;        // 再開・シーク直後、残り時間がこれ未満（実時間・秒）なら次の文から読む
 const MAX_BOOST = 1.6;         // 遅れを取り戻すための早口の上限（再生速度に対する倍率）
 const MAX_RATE = 3.5;
-const MAX_LAG_SEGMENTS = 2;    // 声がこの文数以上遅れたら、間の文を飛ばして今の文に追いつく
+const HOLD_AFTER = 1.0;        // 次の文の開始からこれ以上（動画の秒）声が遅れたら、動画を止めて待つ
 
 // 方針: 読み始めた文は途中で切らず、読み終えてから次の文へ進む。
-// 声が遅れた分は、文と文のすき間と、上限つきの早口で取り戻す。
+// 文は飛ばさない。声が遅れた分は、文と文のすき間と上限つきの早口で取り戻し、
+// それでも遅れるときは、読み終わるまで動画のほうを一時的に止めて待つ。
 // 途中で止めるのは、一時停止・シーク・読み上げOFFのときだけ。
 // 読み込み待ち（バッファリング）や再生位置の通知の遅れでは止めない。
 
 export class SyncEngine {
-  constructor({ segments, speech, getTime, getRate, onActiveChange, onVoiceStop }) {
+  constructor({ segments, speech, getTime, getRate, onActiveChange, onVoiceStop, holdVideo, releaseVideo, onHoldChange }) {
     this.segments = segments;
     this.speech = speech;
     this.getTime = getTime;
     this.getRate = getRate;
     this.onActiveChange = onActiveChange || (() => {});
     this.onVoiceStop = onVoiceStop || (() => {});   // 声を途中で止めたとき（理由つき・診断用）
+    this.holdVideo = holdVideo || (() => {});         // 動画を一時的に止める
+    this.releaseVideo = releaseVideo || (() => {});   // 止めた動画を再開する
+    this.onHoldChange = onHoldChange || (() => {});
+    this.holding = false;    // 声を待つために動画を止めている最中か
+    this.holdEndedAt = 0;
     this.voiceOn = true;
     this.playing = false;
     this.activeIdx = -2;     // 字幕で強調中の文（動画の位置に従う）
@@ -54,7 +60,23 @@ export class SyncEngine {
   // 利用者が一時停止した（または動画が終わった）: すぐ黙り、再開時は今の位置の文から
   pause() {
     this.playing = false;
+    this.endHold(false);     // 利用者が止めたので、動画は再開しない
     this.resync('一時停止');
+  }
+
+  // 声待ちの停止を終える。resume = true なら動画を再開する
+  endHold(resume) {
+    if (!this.holding) return;
+    this.holding = false;
+    this.holdEndedAt = performance.now();
+    this.onHoldChange(false);
+    if (resume) this.releaseVideo();
+  }
+
+  // プレーヤーから「一時停止」の通知が来たとき、それが声待ちによるものか
+  // （止めた直後・再開した直後に遅れて届く通知も含めて判定する）
+  isHoldPause() {
+    return this.holding || performance.now() - this.holdEndedAt < 500;
   }
 
   // 再生速度が変わった: 読み上げ中の文はそのまま読み終え、次の文から新しい速度にする
@@ -73,6 +95,7 @@ export class SyncEngine {
     this.speakSeq++;
     this.speaking = false;
     this.nextIdx = null;
+    this.endHold(this.playing);
   }
 
   // 時刻 t までに始まっている最後の文（なければ -1）
@@ -112,9 +135,20 @@ export class SyncEngine {
 
     // 読み上げ中は切らない（通知が来ないブラウザ不具合に備えて期限だけ見る）
     if (this.speaking) {
-      if (now < this.speakDeadline || this.speech.isSpeaking?.()) return;
+      if (now < this.speakDeadline || this.speech.isSpeaking?.()) {
+        // 次の文の時刻を過ぎても読み終わらないときは、動画を止めて声を待つ
+        const n = this.nextIdx;
+        if (!this.holding && n !== null && n < this.segments.length
+            && t >= this.segments[n].start + HOLD_AFTER) {
+          this.holding = true;
+          this.onHoldChange(true);
+          this.holdVideo();
+        }
+        return;
+      }
       this.speaking = false;
     }
+    this.endHold(true);
 
     const segs = this.segments;
     if (this.nextIdx === null) {
@@ -126,10 +160,6 @@ export class SyncEngine {
         this.nextIdx = tooLate ? idx + 1 : idx;
       }
     }
-    // 遅れすぎたら、まだ読んでいない文を飛ばして追いつく
-    // （ここに来るのは読み上げ中でないときだけ。読んでいる文は切らない）
-    if (idx - this.nextIdx >= MAX_LAG_SEGMENTS) this.nextIdx = idx;
-
     const i = this.nextIdx;
     if (i >= segs.length || t < segs[i].start) return;   // 次の文の開始待ち
     this.nextIdx = i + 1;
@@ -160,6 +190,7 @@ export class SyncEngine {
       onEnd: (elapsed) => {
         if (seq !== this.speakSeq) return;
         this.speaking = false;
+        this.endHold(true);   // 声が追いついたので動画を再開
         // 実際にかかった時間から読み上げ速度の見積もりを補正
         if (!this.speech.supportsOffset && elapsed >= 0.3 && chars >= 5) {
           const measured = chars / (elapsed * speechRate);

@@ -34,6 +34,11 @@ export function renderWatch(root, videoId) {
   playBtn.addEventListener('click', () => {
     if (!ready) return;
     speechProvider.unlock();           // タップ直後に呼ぶことでスマホの読み上げ制限を解除
+    if (engine?.holding) {             // 声待ちで動画が止まっている最中に押された → 本当に一時停止
+      engine.pause();
+      playBtn.textContent = '▶ 再生';
+      return;
+    }
     if (isPlaying()) player.pauseVideo(); else player.playVideo();
   });
   speedSel.addEventListener('change', () => ready && player.setPlaybackRate(Number(speedSel.value)));
@@ -125,6 +130,12 @@ export function renderWatch(root, videoId) {
             getTime: () => player.getCurrentTime(),
             getRate: () => player.getPlaybackRate(),
             onActiveChange,
+            holdVideo: () => player.pauseVideo(),
+            releaseVideo: () => player.playVideo(),
+            onHoldChange: (holding) => {
+              if (status.classList.contains('error')) return;
+              status.textContent = holding ? '声が追いつくまで、動画を少し止めています…' : '';
+            },
             onVoiceStop: (reason) => {
               diag.textContent = `最後に声を途中で止めた理由: ${reason}（動画の ${formatTime(player.getCurrentTime())} 付近）`;
             },
@@ -137,6 +148,8 @@ export function renderWatch(root, videoId) {
         onStateChange: (e) => {
           const playing = e.data === YT.PlayerState.PLAYING;
           const buffering = e.data === YT.PlayerState.BUFFERING;
+          // 声待ちでアプリ自身が動画を止めたときの通知は、一時停止として扱わない
+          if (e.data === YT.PlayerState.PAUSED && engine?.isHoldPause()) return;
           // 読み込み待ちは「再生中の一時的な足踏み」として扱い、声は止めない
           if (!buffering) playBtn.textContent = playing ? '一時停止' : '▶ 再生';
           if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED) engine?.pause();
