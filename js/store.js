@@ -22,3 +22,11 @@ export function addItem(item) {
 export function removeItem(videoId) {
   save(listItems().filter(i => i.videoId !== videoId));
 }
+
+export function updateItem(videoId, patch) {
+  const items = listItems();
+  const item = items.find(i => i.videoId === videoId);
+  if (!item) return;
+  Object.assign(item, patch);
+  save(items);
+}

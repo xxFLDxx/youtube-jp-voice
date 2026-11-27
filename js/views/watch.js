@@ -1,7 +1,8 @@
 import { h, formatTime } from '../dom.js';
 import { loadYouTubeApi } from '../youtube.js';
-import { transcriptProvider, speechProvider } from '../config.js';
-import { getItem } from '../store.js';
+import { getTranscript, createSpeechFor, browserSpeech } from '../config.js';
+import { getItem, updateItem } from '../store.js';
+import { getTranscript as getSaved, putTranscript } from '../db.js';
 import { SyncEngine } from '../sync.js';
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -16,6 +17,7 @@ const YT_ERRORS = {
 // 戻り値: 画面を離れるときの後片付け関数
 export function renderWatch(root, videoId) {
   let player = null, engine = null, disposed = false, ready = false;
+  let speech = browserSpeech;   // 読み込み後、保存済みの音声があればそちらに替わる
 
   const title = h('h1', { class: 'watch-title' }, getItem(videoId)?.title || '読み込み中…');
   const playerHost = h('div', { id: 'player' });
@@ -23,6 +25,7 @@ export function renderWatch(root, videoId) {
   const status = h('p', { class: 'status', role: 'status' });
   const list = h('ol', { class: 'sub-list' });
   const diag = h('p', { class: 'note diag' });   // 声を途中で止めた理由（原因調査用）
+  const voiceInfo = h('p', { class: 'note' });
 
   const playBtn = h('button', { type: 'button', class: 'primary', disabled: true }, '▶ 再生');
   const speedSel = h('select', { id: 'speed', disabled: true },
@@ -33,7 +36,7 @@ export function renderWatch(root, videoId) {
 
   playBtn.addEventListener('click', () => {
     if (!ready) return;
-    speechProvider.unlock();           // タップ直後に呼ぶことでスマホの読み上げ制限を解除
+    speech.unlock();           // タップ直後に呼ぶことでスマホの読み上げ制限を解除
     if (engine?.holding) {             // 声待ちで動画が止まっている最中に押された → 本当に一時停止
       engine.pause();
       playBtn.textContent = '▶ 再生';
@@ -43,7 +46,7 @@ export function renderWatch(root, videoId) {
   });
   speedSel.addEventListener('change', () => ready && player.setPlaybackRate(Number(speedSel.value)));
   voiceChk.addEventListener('change', () => {
-    if (voiceChk.checked) speechProvider.unlock();
+    if (voiceChk.checked) speech.unlock();
     engine?.setVoiceOn(voiceChk.checked);
   });
 
@@ -60,6 +63,7 @@ export function renderWatch(root, videoId) {
       title,
       h('p', { class: 'note' },
         '声が出ないときは、動画の中ではなく上の「再生」ボタンを押してください。'),
+      voiceInfo,
       diag,
     ),
     h('aside', { class: 'watch-side' },
@@ -67,6 +71,16 @@ export function renderWatch(root, videoId) {
       list,
     ),
   ));
+
+  // 名前を付けずに変換した動画は、YouTubeの題名を一覧の名前にする
+  async function adoptVideoTitle() {
+    const real = player.getVideoData?.()?.title;
+    if (!real || title.textContent !== `動画 ${videoId}`) return;
+    title.textContent = real;
+    updateItem(videoId, { title: real });
+    const saved = await getSaved(videoId).catch(() => null);
+    if (saved) putTranscript({ ...saved, title: real }).catch(() => {});
+  }
 
   function showError(msg) {
     status.textContent = msg;
@@ -88,9 +102,13 @@ export function renderWatch(root, videoId) {
     let transcript, YT;
     try {
       [transcript, YT] = await Promise.all([
-        transcriptProvider.getTranscript(videoId),
+        getTranscript(videoId),
         loadYouTubeApi(),
       ]);
+      const chosen = await createSpeechFor(transcript);
+      if (disposed) return chosen.speech.dispose?.();
+      speech = chosen.speech;
+      voiceInfo.textContent = `声: ${chosen.label}`;
     } catch (err) {
       return showError(err.message || '読み込みに失敗しました。');
     }
@@ -103,14 +121,14 @@ export function renderWatch(root, videoId) {
           type: 'button',
           onclick: () => {
             if (!ready) return;
-            speechProvider.unlock();
+            speech.unlock();
             player.seekTo(seg.start, true);
             player.playVideo();
           },
         }, h('span', { class: 'time' }, formatTime(seg.start)), h('span', {}, seg.text))));
     });
 
-    if (!speechProvider.available) {
+    if (!speech.available) {
       showError('このブラウザは読み上げ機能に対応していません。字幕のみ表示します。');
     }
 
@@ -126,7 +144,7 @@ export function renderWatch(root, videoId) {
           player.mute();               // 元の音声は流さない
           engine = new SyncEngine({
             segments: transcript.segments,
-            speech: speechProvider,
+            speech,
             getTime: () => player.getCurrentTime(),
             getRate: () => player.getPlaybackRate(),
             onActiveChange,
@@ -144,6 +162,7 @@ export function renderWatch(root, videoId) {
           engine.start();
           playBtn.disabled = false;
           speedSel.disabled = false;
+          adoptVideoTitle();
         },
         onStateChange: (e) => {
           const playing = e.data === YT.PlayerState.PLAYING;
@@ -167,7 +186,8 @@ export function renderWatch(root, videoId) {
   return () => {
     disposed = true;
     engine?.stop();
-    speechProvider.stop();
+    speech.stop();
+    speech.dispose?.();
     try { player?.destroy(); } catch { /* 破棄済み */ }
   };
 }

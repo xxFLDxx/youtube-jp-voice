@@ -33,7 +33,7 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 .card.empty { text-align: center; }
 label { font-size: 14px; }
 .row { display: flex; gap: 8px; margin-top: 4px; }
-input[type=url] {
+input[type=url], input[type=text], input[type=password], textarea, select#voice-select {
   flex: 1; min-width: 0; padding: 10px 12px; font-size: 16px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text);
 }
@@ -91,3 +91,25 @@ button.link { border: 0; background: none; color: var(--accent); padding: 0; tex
   .controls { margin-top: 12px; }
   .sub-list { max-height: calc(100vh - 180px); }
 }
+
+/* 第2段階: 設定・文字起こし・進み具合 */
+.stack { display: grid; gap: 16px; }
+.stack > .card { margin: 0 auto; width: 100%; }
+.stack > h1, .stack > .lead { max-width: 720px; margin: 0 auto; width: 100%; }
+textarea { width: 100%; margin-top: 4px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px; line-height: 1.5; resize: vertical; }
+.row.gap { flex-wrap: wrap; margin-top: 10px; }
+.key-line { margin: 0 0 8px; font-size: 14px; }
+.key-state { font-weight: 600; }
+details.note summary { cursor: pointer; }
+details.note ol { margin: 6px 0 0; padding-left: 1.4em; }
+.estimate { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 14px; }
+.estimate p { margin: 0 0 6px; }
+.estimate ul { margin: 0 0 6px; padding-left: 1.3em; }
+.error-text { color: var(--danger); }
+.progress-box { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; display: grid; gap: 8px; justify-items: start; }
+.progress-box progress { width: 100%; height: 14px; accent-color: var(--accent); }
+.progress-label { margin: 0; font-weight: 600; }
+.flash { background: var(--active); border-radius: 10px; padding: 10px 14px; margin: 0 0 12px; }
+.item-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; flex: none; }
+.video-sub.warn { color: var(--danger); }
+[hidden] { display: none !important; }

@@ -151,7 +151,8 @@ export class SyncEngine {
     this.endHold(true);
 
     const segs = this.segments;
-    if (this.nextIdx === null) {
+    const fresh = this.nextIdx === null;   // 再生開始・再開・シーク直後か
+    if (fresh) {
       // 再生開始・再開・シーク直後: 今の位置の文から。残りがわずかなら次の文から
       if (idx < 0) this.nextIdx = 0;
       else {
@@ -163,24 +164,26 @@ export class SyncEngine {
     const i = this.nextIdx;
     if (i >= segs.length || t < segs[i].start) return;   // 次の文の開始待ち
     this.nextIdx = i + 1;
-    this.speakSegment(i, t, rate);
+    this.speakSegment(i, t, rate, fresh);
   }
 
-  speakSegment(idx, t, rate) {
+  speakSegment(idx, t, rate, fresh) {
     const seg = this.segments[idx];
     const next = this.segments[idx + 1];
     // 次の文が始まるまでを持ち時間とする（すき間も使える）。遅れているほど短くなる
     const windowEnd = next ? next.start : seg.end + 2;
     const windowReal = Math.max((windowEnd - t) / rate, 0.01);
     const chars = seg.text.length;
-    const est = chars / this.charsPerSec;          // 標準速度での所要秒数の見積もり
 
-    const offset = Math.max(0, t - seg.start);
-    let speechRate = rate;
-    if (!this.speech.supportsOffset) {
-      // 持ち時間に収まらない／遅れているときは、上限つきで早口にする
-      speechRate = Math.min(Math.max(rate, est / windowReal), rate * MAX_BOOST, MAX_RATE);
-    }
+    // 文の途中から話せる部品でも、途中から始めるのは再開・シーク直後だけ。
+    // 順番に読み進めているときは、遅れていても必ず文頭から読む。
+    const offset = fresh && this.speech.supportsOffset ? Math.max(0, t - seg.start) : 0;
+    // 標準速度での所要秒数: 部品が音声の長さを知っていればそれ、無ければ文字数からの見積もり
+    const known = this.speech.durationOf?.(seg);
+    const est = Math.max((known ?? chars / this.charsPerSec) - offset, 0.1);
+    // 持ち時間に収まらない／遅れているときは、上限つきで速める
+    const maxBoost = this.speech.maxBoost ?? MAX_BOOST;
+    const speechRate = Math.min(Math.max(rate, est / windowReal), rate * maxBoost, MAX_RATE);
     const seq = ++this.speakSeq;
     this.speaking = true;
     this.speakDeadline = performance.now() + (est / speechRate) * 3000 + 5000;
@@ -192,7 +195,7 @@ export class SyncEngine {
         this.speaking = false;
         this.endHold(true);   // 声が追いついたので動画を再開
         // 実際にかかった時間から読み上げ速度の見積もりを補正
-        if (!this.speech.supportsOffset && elapsed >= 0.3 && chars >= 5) {
+        if (known == null && !this.speech.supportsOffset && elapsed >= 0.3 && chars >= 5) {
           const measured = chars / (elapsed * speechRate);
           if (measured > 2 && measured < 20) {
             this.charsPerSec = this.charsPerSec * 0.5 + measured * 0.5;
