@@ -37,7 +37,8 @@ function sameSource(job, rawText) {
 }
 
 // 変換を実行する。translator は必須、tts は null でもよい（その場合は翻訳だけ）。
-// onProgress({ phase: 'translate' | 'tts' | 'done', done, total })
+// onProgress({ phase: 'translate' | 'tts' | 'done', done, total, waitSec })
+//   waitSec: Googleの1分あたりの上限に当たって待っている場合の残り秒数（待っていなければ 0）
 export async function runConversion({ videoId, title, rawText, cues, voice }, { translator, tts, onProgress = () => {}, signal }) {
   let job = await db.getJob(videoId);
   if (!sameSource(job, rawText)) {
@@ -110,13 +111,24 @@ export async function runConversion({ videoId, title, rawText, cues, voice }, { 
     const total = job.segments.length;
     let done = 0;
     let cursor = 0;
+    // 並行して動かす処理のどれかが失敗・中断したら、残りもすぐ止める
+    // （裏で動き続けると、「続きから再開」したときに同じ文を二重に作ってしまうため）
+    const stopAll = new AbortController();
+    const onOuterAbort = () => stopAll.abort(signal.reason);
+    signal?.addEventListener('abort', onOuterAbort, { once: true });
+    if (signal?.aborted) onOuterAbort();
+    let firstError = null;
+
     const worker = async () => {
       while (cursor < total) {
         const i = cursor++;
-        signal?.throwIfAborted();
+        stopAll.signal.throwIfAborted();
         const seg = job.segments[i];
         if (!(await db.getAudio(videoId, i))) {
-          const blob = await tts.synthesize(seg.text, job.voice, { signal });
+          const blob = await tts.synthesize(seg.text, job.voice, {
+            signal: stopAll.signal,
+            onWait: (waitSec) => onProgress({ phase: 'tts', done, total, waitSec }),
+          });
           const dur = await audioDuration(blob);
           if (dur) seg.audioDur = dur;
           await db.putAudio(videoId, i, blob);
@@ -126,14 +138,21 @@ export async function runConversion({ videoId, title, rawText, cues, voice }, { 
         onProgress({ phase: 'tts', done, total });
       }
     };
+    const guarded = () => worker().catch((err) => {
+      if (!firstError) firstError = err;
+      stopAll.abort(err);
+    });
     onProgress({ phase: 'tts', done: 0, total });
     try {
-      await Promise.all(Array.from({ length: Math.min(TTS_PARALLEL, total) }, worker));
+      // 全員が止まるのを待ってから、できた分を保存する
+      await Promise.all(Array.from({ length: Math.min(TTS_PARALLEL, total) }, guarded));
     } finally {
+      signal?.removeEventListener('abort', onOuterAbort);
       // 中断・失敗しても、できた分（音声の長さ・使用量）は残す
       await db.putJob(job);
       await db.putTranscript(record());
     }
+    if (firstError) throw firstError;
     saveItem('done', 'google');
   }
 

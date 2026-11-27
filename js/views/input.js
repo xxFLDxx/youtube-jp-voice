@@ -131,8 +131,15 @@ export function renderInput(root, { resumeId } = {}) {
           phase = p.phase;
           progressBar.max = Math.max(1, p.total);
           progressBar.value = p.done;
-          const unit = p.phase === 'tts' ? '文' : '行';
-          progressLabel.textContent = `${PHASE_LABEL[p.phase]}… ${p.done} / ${p.total} ${unit}`;
+          if (p.phase === 'tts' && p.waitSec > 0) {
+            progressLabel.textContent = `Googleの1分あたりの上限に当たりました。あと ${p.waitSec} 秒待って、自動で続きから再開します（${p.done} / ${p.total} 文まで完了）`;
+          } else if (p.phase === 'tts') {
+            // 送信は1分に50文までに抑えているので、残り時間の目安を出す
+            const minutes = Math.ceil((p.total - p.done) / 50);
+            progressLabel.textContent = `${PHASE_LABEL.tts}… ${p.done} / ${p.total} 文（残り約 ${minutes} 分）`;
+          } else {
+            progressLabel.textContent = `${PHASE_LABEL.translate}… ${p.done} / ${p.total} 行`;
+          }
         },
       });
       const cost = actualClaudeUsd(result.usage);
