@@ -2,11 +2,12 @@
 // 第2段階では、同じ3つの操作を持つ音声合成の部品に差し替えます。
 //
 //   unlock()                      利用者のタップ直後に呼ぶ（スマホの制限解除）
-//   speak(segment, options)       文を話す。前の発話は打ち切る
+//   speak(segment, options)       文を話す（前の発話が残っていれば打ち切る。
+//                                 通常は同期側が読み終わりを待ってから呼ぶ）
 //       options.rate    話す速さ（1 = 標準）
 //       options.offset  文の先頭から何秒目から話すか（ブラウザ読み上げは未対応で無視。
 //                       音声ファイルを再生する部品なら途中から再生できる）
-//       options.onEnd   最後まで話し終えたとき onEnd(かかった秒数)
+//       options.onEnd   話し終えたとき（失敗時も）必ず onEnd(かかった秒数) を呼ぶ
 //   stop()                        すぐ黙る
 
 export function createBrowserSpeechProvider() {
@@ -51,7 +52,9 @@ export function createBrowserSpeechProvider() {
         if (voice) u.voice = voice;
         u.rate = rate;
         const t0 = performance.now();
-        u.onend = () => { if (my === token) onEnd?.((performance.now() - t0) / 1000); };
+        const done = () => { if (my === token) onEnd?.((performance.now() - t0) / 1000); };
+        u.onend = done;
+        u.onerror = done;
         synth.speak(u);
       }, 60);
     },

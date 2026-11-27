@@ -3,9 +3,14 @@
 
 const TICK_MS = 100;
 const SEEK_THRESHOLD = 0.75;   // 予想位置からこれ以上（秒）ずれたらシークとみなす
-const MIN_WINDOW = 0.8;        // 残り時間がこれ未満（実時間・秒）なら読まずに次の文を待つ
-const MAX_BOOST = 1.6;         // 持ち時間に収めるための早口の上限（再生速度に対する倍率）
+const MIN_WINDOW = 0.8;        // 再開・シーク直後、残り時間がこれ未満（実時間・秒）なら次の文から読む
+const MAX_BOOST = 1.6;         // 遅れを取り戻すための早口の上限（再生速度に対する倍率）
 const MAX_RATE = 3.5;
+const MAX_LAG_SEGMENTS = 2;    // 声がこの文数以上遅れたら、間の文を飛ばして今の文に追いつく
+
+// 方針: 読み始めた文は途中で切らず、読み終えてから次の文へ進む。
+// 声が遅れた分は、文と文のすき間と、上限つきの早口で取り戻す。
+// 途中で止めるのは、一時停止・シーク・読み上げOFFのときだけ。
 
 export class SyncEngine {
   constructor({ segments, speech, getTime, getRate, onActiveChange }) {
@@ -16,11 +21,14 @@ export class SyncEngine {
     this.onActiveChange = onActiveChange || (() => {});
     this.voiceOn = true;
     this.playing = false;
-    this.activeIdx = -2;     // 字幕で強調中の文
-    this.spokenIdx = -1;     // 読み上げを始めた文
+    this.activeIdx = -2;     // 字幕で強調中の文（動画の位置に従う）
+    this.nextIdx = null;     // 次に読む文（null = 今の位置から決め直す）
+    this.speaking = false;   // 読み上げ中か
+    this.speakDeadline = 0;  // 読み終わりの通知が来ない場合の保険
+    this.speakSeq = 0;
     this.lastT = null;
     this.lastNow = 0;
-    this.charsPerSec = 6;    // 標準速度で1秒に読める文字数（実測で補正していく）
+    this.charsPerSec = 4.5;  // 標準速度で1秒に読める文字数（実測で補正していく）
     this.timer = null;
   }
 
@@ -39,8 +47,8 @@ export class SyncEngine {
     if (playing) this.tick();
   }
 
-  // 再生速度が変わった
-  rateChanged() { this.resync(); }
+  // 再生速度が変わった: 読み上げ中の文はそのまま読み終え、次の文から新しい速度にする
+  rateChanged() {}
 
   setVoiceOn(on) {
     this.voiceOn = on;
@@ -50,7 +58,9 @@ export class SyncEngine {
   // いったん黙り、次の tick で今の位置の文から読み直す
   resync() {
     this.speech.stop();
-    this.spokenIdx = -1;
+    this.speakSeq++;
+    this.speaking = false;
+    this.nextIdx = null;
     this.lastT = null;
   }
 
@@ -86,42 +96,69 @@ export class SyncEngine {
 
     if (seeked) {
       this.speech.stop();
-      this.spokenIdx = -1;
+      this.speakSeq++;
+      this.speaking = false;
+      this.nextIdx = null;
     }
-    if (!this.voiceOn || idx < 0 || idx === this.spokenIdx) return;
+    if (!this.voiceOn) return;
 
-    const seg = this.segments[idx];
-    if (t >= seg.end) return;            // 文と文のすき間。前の発話は最後まで言わせる
-    this.spokenIdx = idx;
-    this.speakSegment(idx, t, rate);
+    // 読み上げ中は切らない（通知が来ないブラウザ不具合に備えて期限だけ見る）
+    if (this.speaking) {
+      if (now < this.speakDeadline) return;
+      this.speaking = false;
+    }
+
+    const segs = this.segments;
+    if (this.nextIdx === null) {
+      // 再生開始・再開・シーク直後: 今の位置の文から。残りがわずかなら次の文から
+      if (idx < 0) this.nextIdx = 0;
+      else {
+        const windowEnd = segs[idx + 1] ? segs[idx + 1].start : segs[idx].end;
+        const tooLate = t >= segs[idx].end || (windowEnd - t) / rate < MIN_WINDOW;
+        this.nextIdx = tooLate ? idx + 1 : idx;
+      }
+    }
+    // 遅れすぎたら間の文を飛ばして追いつく
+    if (idx - this.nextIdx >= MAX_LAG_SEGMENTS) this.nextIdx = idx;
+
+    const i = this.nextIdx;
+    if (i >= segs.length || t < segs[i].start) return;   // 次の文の開始待ち
+    this.nextIdx = i + 1;
+    this.speakSegment(i, t, rate);
   }
 
   speakSegment(idx, t, rate) {
     const seg = this.segments[idx];
     const next = this.segments[idx + 1];
-    // 次の文が始まるまでを持ち時間とする（すき間も使える）
+    // 次の文が始まるまでを持ち時間とする（すき間も使える）。遅れているほど短くなる
     const windowEnd = next ? next.start : seg.end + 2;
-    const windowReal = (windowEnd - t) / rate;
-    if (windowReal < MIN_WINDOW) return;
+    const windowReal = Math.max((windowEnd - t) / rate, 0.01);
+    const chars = seg.text.length;
+    const est = chars / this.charsPerSec;          // 標準速度での所要秒数の見積もり
 
     const offset = Math.max(0, t - seg.start);
     let speechRate = rate;
     if (!this.speech.supportsOffset) {
-      // 途中から話せない部品は文頭から読むので、持ち時間に収まるよう必要なら早口にする
-      const needed = (seg.text.length / this.charsPerSec) / windowReal;
-      speechRate = Math.min(Math.max(rate, needed), rate * MAX_BOOST, MAX_RATE);
+      // 持ち時間に収まらない／遅れているときは、上限つきで早口にする
+      speechRate = Math.min(Math.max(rate, est / windowReal), rate * MAX_BOOST, MAX_RATE);
     }
-    const chars = seg.text.length;
+    const seq = ++this.speakSeq;
+    this.speaking = true;
+    this.speakDeadline = performance.now() + (est / speechRate) * 3000 + 5000;
     this.speech.speak(seg, {
       rate: speechRate,
       offset,
       onEnd: (elapsed) => {
+        if (seq !== this.speakSeq) return;
+        this.speaking = false;
         // 実際にかかった時間から読み上げ速度の見積もりを補正
-        if (this.speech.supportsOffset || elapsed < 0.3 || chars < 5) return;
-        const measured = chars / (elapsed * speechRate);
-        if (measured > 2 && measured < 20) {
-          this.charsPerSec = this.charsPerSec * 0.7 + measured * 0.3;
+        if (!this.speech.supportsOffset && elapsed >= 0.3 && chars >= 5) {
+          const measured = chars / (elapsed * speechRate);
+          if (measured > 2 && measured < 20) {
+            this.charsPerSec = this.charsPerSec * 0.5 + measured * 0.5;
+          }
         }
+        this.tick();     // 待っている次の文があればすぐ読む
       },
     });
   }
