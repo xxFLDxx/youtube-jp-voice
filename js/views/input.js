@@ -63,7 +63,31 @@ export function renderInput(root, { resumeId } = {}) {
       h('p', { class: 'note' }, '目安であり、実際の料金は前後します。正確な額は各サービスの請求画面で確認してください。'),
     );
   }
-  textArea.addEventListener('input', showEstimate);
+  // ブックマークレットでコピーした文章の先頭にある「URL:」「TITLE:」の行から、URLと名前を自動で入れる
+  function adoptHeader() {
+    const url = textArea.value.match(/^URL:\s*(\S+)/m);
+    const title = textArea.value.match(/^TITLE:\s*(.+)$/m);
+    if (url && parseVideoId(url[1]) && !urlInput.value.trim()) urlInput.value = url[1];
+    if (title && !titleInput.value.trim()) titleInput.value = title[1].trim();
+  }
+  textArea.addEventListener('input', () => { adoptHeader(); showEstimate(); });
+
+  // ブックマークレット（YouTubeの動画ページで押すと文字起こしをコピーするブックマーク）
+  const bmLink = h('a', {
+    class: 'button bookmarklet', href: '#', draggable: 'true',
+    onclick: (e) => { e.preventDefault(); bmStatus.textContent = 'ここでは押さずに、ブックマークバーへドラッグしてください。'; },
+  }, '文字起こしコピー');
+  const bmStatus = h('span', { class: 'note', role: 'status' });
+  const bmCopy = h('button', { type: 'button', disabled: true }, 'コードをコピー');
+  fetch('bookmarklet/transcript-copy.js').then(r => r.ok ? r.text() : Promise.reject()).then(src => {
+    const code = 'javascript:' + encodeURIComponent(src);
+    bmLink.setAttribute('href', code);
+    bmCopy.disabled = false;
+    bmCopy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(code); bmStatus.textContent = 'コードをコピーしました。ブックマークのURL欄に貼り付けてください。'; }
+      catch { bmStatus.textContent = 'コピーできませんでした。'; }
+    });
+  }).catch(() => { bmStatus.textContent = 'ブックマークレットを読み込めませんでした。'; });
 
   function setBusy(busy) {
     button.disabled = busy;
@@ -165,8 +189,17 @@ export function renderInput(root, { resumeId } = {}) {
         h('div', {},
           h('label', { for: 'transcript' }, '3. 英語の文字起こし（時刻つき）'),
           textArea,
+          h('details', { class: 'note', id: 'bookmarklet-help' },
+            h('summary', {}, 'ワンクリックでコピーする（ブックマークレット・パソコン向け）'),
+            h('p', {}, '最初に1回だけ登録: 下の青いボタンを、ブラウザのブックマークバーへドラッグします',
+              '（バーが出ていないときは Ctrl+Shift+B、Mac は ⌘+Shift+B）。'),
+            h('p', { class: 'row gap' }, bmLink, bmCopy),
+            h('p', {}, bmStatus),
+            h('p', {}, '使い方: YouTubeで動画のページを開く → 登録した「文字起こしコピー」を押す → 「コピーしました」と出たら、この欄に貼り付ける。',
+              'URLと名前も自動で入ります。'),
+          ),
           h('details', { class: 'note' },
-            h('summary', {}, '文字起こしのコピーのしかた'),
+            h('summary', {}, '手でコピーするしかた'),
             h('ol', {},
               h('li', {}, 'YouTubeで動画のページを開く'),
               h('li', {}, '動画の説明欄を開き、下のほうにある「文字起こしを表示」を押す'),

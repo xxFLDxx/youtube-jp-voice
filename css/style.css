@@ -113,3 +113,5 @@ details.note ol { margin: 6px 0 0; padding-left: 1.4em; }
 .item-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; flex: none; }
 .video-sub.warn { color: var(--danger); }
 [hidden] { display: none !important; }
+.bookmarklet { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; cursor: grab; }
+details.note p { margin: 6px 0; }
